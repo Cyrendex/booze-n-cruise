@@ -1,0 +1,6 @@
+name: BoozeNCruise
+version: '1.0-SNAPSHOT'
+main: me.Cyrendex.boozeNCruise.BoozeNCruise
+api-version: '1.21'
+authors: [ Cyrendex ]
+description: Grab a cold one and go wild
