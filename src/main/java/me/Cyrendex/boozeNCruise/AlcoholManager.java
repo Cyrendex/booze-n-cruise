@@ -171,6 +171,6 @@ public final class AlcoholManager {
         p.tolerance = clamp01(p.tolerance + delta);
     }
 
-    // Clamp helper between 0-1
-    private static double clamp01(double value) { return value < 0 ? 0: (value > 1 ? 1 : value); }
+    // Clamp helper between 0-1 and now this is public!
+    public static double clamp01(double value) { return value < 0 ? 0: (value > 1 ? 1 : value); }
 }
