@@ -121,6 +121,7 @@ public final class AlcoholManager {
         public final UUID uuid;
         public double bac;      // current BAC
         public double absorb;   // pool not yet in BAC
+        public double tolerance; // tolerance to negative effects of intoxication
         public Profile(UUID uuid) { this.uuid = uuid; }
     }
 
@@ -148,4 +149,28 @@ public final class AlcoholManager {
     public AlcoholManager.DrinkDef getDrink(String id) {
         return drinks.get(id);
     }
+
+    /* Ugly Java getter/setters ew yuck :( */
+    public double getBac(UUID id) {
+        Profile p = profiles.get(id);
+        return (p == null) ? 0.0 : p.bac; // Sober if fetch fails
+    }
+
+    public double getTolerance(UUID id) {
+        Profile p = profiles.get(id);
+        return (p == null) ? 0.0 : p.tolerance; // Set lowest if fetch fails
+    }
+
+    public void setTolerance(UUID id, double value) {
+        Profile p = profiles.computeIfAbsent(id, Profile::new);
+        p.tolerance = clamp01(value);
+    }
+
+    public void addTolerance(UUID id, double delta) {
+        Profile p = profiles.computeIfAbsent(id, Profile::new);
+        p.tolerance = clamp01(p.tolerance + delta);
+    }
+
+    // Clamp helper between 0-1
+    private static double clamp01(double value) { return value < 0 ? 0: (value > 1 ? 1 : value); }
 }
