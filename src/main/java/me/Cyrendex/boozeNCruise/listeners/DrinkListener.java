@@ -2,6 +2,8 @@ package me.Cyrendex.boozeNCruise.listeners;
 
 import me.Cyrendex.boozeNCruise.AlcoholManager;
 import org.bukkit.Material;
+import org.bukkit.Sound;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
@@ -21,23 +23,29 @@ public final class DrinkListener implements Listener {
         Action a = e.getAction();
         if (a != Action.RIGHT_CLICK_AIR && a != Action.RIGHT_CLICK_BLOCK) return;
 
-        ItemStack hand = e.getItem();
-        String drinkId = mgr.matchDrink(hand);
-        if (drinkId == null) return;
+        ItemStack stack = e.getItem();
+        if (stack == null) return;
 
-        // Cancel vanilla use (bottle drink behavior)
-        e.setCancelled(true);
+        // Identify drink from CustomModelData string tags
+        AlcoholManager.DrinkDef def = AlcoholManager.lookupDrink(stack);
+        if (def == null) return;
 
-        // consume the used item (respect whichever hand)
-        AlcoholManager.consumeOne(e.getPlayer(), e.getHand(), hand);
+        e.setCancelled(true); // prevent vanilla use
 
-        // give an empty container only if this drink requests it (I think this doesn't work rn lol)
-        AlcoholManager.DrinkDef def = mgr.getDrink(drinkId);
-        if (def != null && def.giveEmptyBottle) {
-            e.getPlayer().getInventory().addItem(new ItemStack(Material.GLASS_BOTTLE));
+        Player p = e.getPlayer();
+
+        // Register intake (adds to absorb, lifetimeDrinks, tolerance)
+        mgr.addDrink(p.getUniqueId(), def.volumeMl, def.abv);
+
+        // Consume one item from the hand that triggered the event
+        AlcoholManager.consumeOne(p, e.getHand(), stack);
+
+        // Give back an empty bottle for potion-based drinks
+        if (stack.getType() == Material.POTION) {
+            p.getInventory().addItem(new ItemStack(Material.GLASS_BOTTLE));
         }
 
-// apply intake
-        mgr.ingest(e.getPlayer(), drinkId);
+        // Slurp
+        p.playSound(p.getLocation(), Sound.ENTITY_GENERIC_DRINK, 1f, 1f);
     }
 }

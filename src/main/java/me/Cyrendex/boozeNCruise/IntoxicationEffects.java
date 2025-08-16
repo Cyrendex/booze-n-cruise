@@ -4,11 +4,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
-
-import static me.Cyrendex.boozeNCruise.AlcoholManager.clamp01;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class IntoxicationEffects {
 
@@ -26,18 +23,93 @@ public class IntoxicationEffects {
     private static final double TOL_SLOPE = 0.75; // Tolerance amplifier
 
     // Instant death over fatal BAC (default will be false)
-    private static final boolean KILL_OVER_45 = false;
+    private static final boolean KILL_OVER_45 = true;
+
+    // long effect duration (apply on stage change only)
+    private static final int EFFECT_SECONDS = 600; // 10 minutes
+    // guard cadence (reapply only if missing/nerfed)
+    private static final int GUARD_PERIOD_SECONDS = 5;
 
     private final AlcoholManager mgr;
     private final Map<UUID, Stage> lastStage = new HashMap<>();
+    private final Map<UUID, Integer> guardTick = new HashMap<>();
+
+    public static final class EffectSpec {
+        public final PotionEffectType type;
+        public final int amplifier;
+
+        public EffectSpec(PotionEffectType type, int amplifier) {
+            this.type = type;
+            this.amplifier = amplifier;
+        }
+    }
+
+    private Map<Stage, List<EffectSpec>> stageEffects = defaultEffects();
+    private Set<PotionEffectType> managedTypes = rebuildManagedTypes(stageEffects);
 
     public IntoxicationEffects(AlcoholManager mgr) {
         this.mgr = mgr;
     }
 
+    /**  We'll replace the effects table at runtime from configs or smth **/
+    public void setStageEffects(Map<Stage, List<EffectSpec>> newEffects) {
+        // Defensive copy
+        EnumMap<Stage, List<EffectSpec>> copy = new EnumMap<>(Stage.class);
+        for (Stage s : Stage.values()) {
+            List<EffectSpec> list = newEffects.getOrDefault(s, List.of());
+            copy.put(s, List.copyOf(list));
+        }
+        this.stageEffects = copy;
+        this.managedTypes = rebuildManagedTypes(copy);
+    }
+
+    private static Set<PotionEffectType> rebuildManagedTypes(Map<Stage, List<EffectSpec>> table) {
+        return table.values().stream()
+                .flatMap(List::stream)
+                .map(effectSpec -> effectSpec.type)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private static Map<Stage, List<EffectSpec>> defaultEffects() {
+        return Map.of(
+                Stage.SOBER, List.of(),
+                Stage.S1, List.of(
+                        new EffectSpec(PotionEffectType.SPEED, 0)
+                        //new EffectSpec(PotionEffectType.NAUSEA, 0)
+                ),
+                Stage.S2, List.of(
+                        new EffectSpec(PotionEffectType.SPEED, 1),
+                        //new EffectSpec(PotionEffectType.NAUSEA, 0),
+                        new EffectSpec(PotionEffectType.STRENGTH, 0),
+                        new EffectSpec(PotionEffectType.HUNGER, 0)
+                ),
+                Stage.S3, List.of(
+                        new EffectSpec(PotionEffectType.SLOWNESS, 0),
+                        new EffectSpec(PotionEffectType.NAUSEA, 0),
+                        new EffectSpec(PotionEffectType.STRENGTH, 0),
+                        new EffectSpec(PotionEffectType.HUNGER, 0)
+                ),
+                Stage.S4, List.of(
+                        new EffectSpec(PotionEffectType.SLOWNESS, 1),
+                        new EffectSpec(PotionEffectType.NAUSEA, 3),
+                        new EffectSpec(PotionEffectType.WEAKNESS, 1),
+                        new EffectSpec(PotionEffectType.HUNGER, 0),
+                        new EffectSpec(PotionEffectType.MINING_FATIGUE, 0)
+                ),
+                Stage.S5, List.of(
+                        new EffectSpec(PotionEffectType.SLOWNESS, 4),
+                        new EffectSpec(PotionEffectType.NAUSEA, 5),
+                        new EffectSpec(PotionEffectType.WEAKNESS, 2),
+                        new EffectSpec(PotionEffectType.HUNGER, 1),
+                        new EffectSpec(PotionEffectType.MINING_FATIGUE, 1),
+                        new EffectSpec(PotionEffectType.POISON, 0),
+                        new EffectSpec(PotionEffectType.BLINDNESS, 0)
+                )
+        );
+    }
+
     public void tick(Player p) {
         final UUID id = p.getUniqueId();
-
         double bac = mgr.getBac(id);
         double tol = mgr.getTolerance(id);
 
@@ -49,9 +121,11 @@ public class IntoxicationEffects {
         Stage stage = computeStage(bac, tol);
         Stage prev = lastStage.get(id);
 
-        if  (prev != stage) {
+        if  (prev != stage) { // Can't reapply every cycle or nausea flickers
             applyStage(p, stage);
             lastStage.put(id, stage);
+        } else { // Since we give long durations due to the previous issue, we check if player removed status effects
+            maybeGuard(p, stage);
         }
     }
 
@@ -71,55 +145,43 @@ public class IntoxicationEffects {
         return Stage.S5;
     }
 
+    private static double clamp01(double value) { return value < 0 ? 0: (value > 1 ? 1 : value); }
+
     private void applyStage(Player p, Stage stage) {
         clearManaged(p); // Wipe current effects
-
-        switch (stage) {
-            case SOBER -> { /* Nothing here */ }
-            case S1 -> {    // Slight positives
-                add(p, PotionEffectType.SPEED, 1, 8);
-                add(p, PotionEffectType.NAUSEA, 0, 6);
-            }
-            case S2 -> { // Mediocre benefits
-                add(p, PotionEffectType.SPEED, 1, 8);
-                add(p, PotionEffectType.NAUSEA, 0, 6);
-                add(p, PotionEffectType.STRENGTH, 1, 8);
-                add(p, PotionEffectType.HUNGER, 0, 8);
-            }
-            case S3 -> { // Uh oh stage
-                add(p, PotionEffectType.SLOWNESS, 1, 8);
-                add(p, PotionEffectType.NAUSEA, 1, 8);
-                add(p, PotionEffectType.STRENGTH, 1, 8);
-                add(p, PotionEffectType.HUNGER, 0, 8);
-            }
-            case S4 -> { // Remove all positive benefits
-                add(p, PotionEffectType.SLOWNESS, 1, 8);
-                add(p, PotionEffectType.NAUSEA, 1, 8);
-                add(p, PotionEffectType.WEAKNESS, 1, 8);
-                add(p, PotionEffectType.HUNGER, 1, 8);
-            }
-            case S5 -> { // Heavy consequences (thanks intelliJ for grammar policing?)
-                add(p, PotionEffectType.SLOWNESS, 4, 8);
-                add(p, PotionEffectType.WEAKNESS, 2, 8);
-                add(p, PotionEffectType.BLINDNESS, 0, 8);
-                add(p, PotionEffectType.POISON, 1, 4);
-            }
+        for (EffectSpec ef : stageEffects.getOrDefault(stage, List.of())) {
+            add(p, ef.type, ef.amplifier);
         }
     }
 
-    private void add(Player p, PotionEffectType type, int amplifier, int seconds) {
-        p.addPotionEffect(new PotionEffect(type, seconds * 20, amplifier, true, false));
+    private void maybeGuard(Player p, Stage stage) {
+        int t = guardTick.merge(p.getUniqueId(), 1, Integer::sum);
+        if (t % GUARD_PERIOD_SECONDS != 0) return; // We only run this every N seconds
+
+        for (EffectSpec ef : stageEffects.getOrDefault(stage, List.of())) {
+            ensurePresent(p, ef.type, ef.amplifier);
+        }
+    }
+
+    private void ensurePresent(Player p, PotionEffectType type, int amp) {
+        PotionEffect current = p.getPotionEffect(type);
+        if (current == null || current.getAmplifier() < amp) {
+            add(p, type, amp); // Re-add the nerfed/removed effect
+        }
+    }
+    // Clear effects for many players
+    public void clearAll(Iterable<? extends org.bukkit.entity.Player> players) {
+        for (org.bukkit.entity.Player p : players) clearManaged(p);
+        lastStage.clear();
+    }
+    private void add(Player p, PotionEffectType type, int amplifier) {
+        PotionEffect effect = new PotionEffect(type, EFFECT_SECONDS  * 20, amplifier, true, false, true);
+        p.addPotionEffect(effect);
     }
 
     private void clearManaged(Player p) {
-        // Remove the effects we manage
-        PotionEffectType[] managed = {
-                PotionEffectType.SPEED, PotionEffectType.NAUSEA,
-                PotionEffectType.STRENGTH, PotionEffectType.HUNGER,
-                PotionEffectType.SLOWNESS, PotionEffectType.WEAKNESS,
-                PotionEffectType.BLINDNESS, PotionEffectType.POISON
-        };
-
-        for (PotionEffectType type : managed) p.removePotionEffect(type);
+        for (PotionEffectType type : managedTypes) {
+            p.removePotionEffect(type);
+        }
     }
 }
